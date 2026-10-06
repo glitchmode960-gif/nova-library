@@ -1,0 +1,906 @@
+--[[
+    NOVA UI Library v1.0
+    Своя библиотека с нуля. Фишки:
+    • Glow-свечение вокруг окна (пульсирует)
+    • Particles на фоне
+    • Мини-бар при сворачивании
+    • Drag за любое место
+    • Notify с очередью и звуком
+    • Click FX (Rings / Burst / Pulse / Focus)
+    • Тени, glass-эффект, блики
+    • Всё в одном файле
+
+    Load:
+        local Nova = loadstring(game:HttpGet("твоя_ссылка"))()
+        local win = Nova:CreateWindow({ Title = "Hole Farm", Theme = "Purple" })
+        local tab = win:CreateTab({ Name = "Main" })
+        tab:CreateButton({ Name = "Click", Callback = function() print("hi") end })
+]]
+
+local Nova = {}
+Nova.Version = "1.0"
+Nova.Brand = "Nova"
+
+local Players = game:GetService("Players")
+local RunService = game:GetService("RunService")
+local TweenService = game:GetService("TweenService")
+local UserInputService = game:GetService("UserInputService")
+local SoundService = game:GetService("SoundService")
+local GuiService = game:GetService("GuiService")
+local CoreGui = game:GetService("CoreGui")
+local LP = Players.LocalPlayer
+
+-- ============================================================
+-- ТЕМЫ
+-- ============================================================
+local THEMES = {
+    Purple = { Accent = Color3.fromRGB(140, 90, 255), Light = Color3.fromRGB(200, 160, 255) },
+    Blue   = { Accent = Color3.fromRGB(80, 120, 255), Light = Color3.fromRGB(140, 180, 255) },
+    Red    = { Accent = Color3.fromRGB(240, 70, 90),  Light = Color3.fromRGB(255, 140, 150) },
+    Green  = { Accent = Color3.fromRGB(60, 210, 130), Light = Color3.fromRGB(150, 245, 190) },
+    Orange = { Accent = Color3.fromRGB(255, 150, 60), Light = Color3.fromRGB(255, 200, 140) },
+    Pink   = { Accent = Color3.fromRGB(255, 100, 200), Light = Color3.fromRGB(255, 170, 230) },
+    Cyan   = { Accent = Color3.fromRGB(80, 220, 230), Light = Color3.fromRGB(160, 245, 250) },
+}
+local currentTheme = "Purple"
+
+local COLORS = {
+    BG       = Color3.fromRGB(18, 18, 24),
+    PANEL    = Color3.fromRGB(26, 26, 34),
+    ITEM     = Color3.fromRGB(34, 34, 44),
+    HOVER    = Color3.fromRGB(46, 46, 58),
+    Text     = Color3.fromRGB(240, 240, 245),
+    Subtext  = Color3.fromRGB(150, 150, 165),
+    Success  = Color3.fromRGB(60, 210, 130),
+    Error    = Color3.fromRGB(240, 70, 90),
+    Warning  = Color3.fromRGB(255, 180, 60),
+}
+
+-- ============================================================
+-- УТИЛИТЫ
+-- ============================================================
+local function container()
+    local ok, hui = pcall(function() return gethui and gethui() or CoreGui end)
+    return ok and hui or CoreGui
+end
+
+local function create(class, props, parent)
+    local obj = Instance.new(class)
+    for k, v in pairs(props or {}) do obj[k] = v end
+    if parent then obj.Parent = parent end
+    return obj
+end
+
+local function corner(parent, r)
+    return create("UICorner", { CornerRadius = UDim.new(0, r or 8) }, parent)
+end
+
+local function stroke(parent, color, thick, transp)
+    return create("UIStroke", {
+        Color = color or THEMES[currentTheme].Accent,
+        Thickness = thick or 1.5,
+        Transparency = transp or 0.2,
+    }, parent)
+end
+
+local function padding(parent, t, r, b, l)
+    return create("UIPadding", {
+        PaddingTop = UDim.new(0, t or 0),
+        PaddingRight = UDim.new(0, r or 0),
+        PaddingBottom = UDim.new(0, b or 0),
+        PaddingLeft = UDim.new(0, l or 0),
+    }, parent)
+end
+
+local function list(parent, gap)
+    return create("UIListLayout", {
+        Padding = UDim.new(0, gap or 6),
+        SortOrder = Enum.SortOrder.LayoutOrder,
+    }, parent)
+end
+
+local function pointerPos(input)
+    if input.UserInputType == Enum.UserInputType.Touch then
+        local inset = GuiService:GetGuiInset()
+        return Vector2.new(input.Position.X + inset.X, input.Position.Y + inset.Y)
+    end
+    return UserInputService:GetMouseLocation()
+end
+
+local function playSound(kind)
+    pcall(function()
+        local id
+        if kind == "success" then id = "rbxassetid://6895079853"
+        elseif kind == "error" then id = "rbxassetid://6895079929"
+        elseif kind == "warning" then id = "rbxassetid://6895079999"
+        else id = "rbxassetid://6895080031" end
+        local s = create("Sound", {
+            SoundId = id, Volume = 0.3, Parent = SoundService,
+        })
+        s:Play()
+        task.delay(2, function() s:Destroy() end)
+    end)
+end
+
+-- ============================================================
+-- NOTIFY
+-- ============================================================
+local notifyHolder
+local notifyQueue = {}
+local notifyActive = false
+
+local function initNotify(parent)
+    if notifyHolder and notifyHolder.Parent then return end
+    notifyHolder = create("Frame", {
+        Name = "Notifications",
+        Size = UDim2.new(0, 320, 1, 0),
+        Position = UDim2.new(1, -330, 0, 0),
+        BackgroundTransparency = 1,
+        ZIndex = 9999,
+        Parent = parent,
+    })
+end
+
+local function buildNotify(cfg)
+    local kind = cfg.Kind or "info"
+    local accent = THEMES[currentTheme].Accent
+    local icon = "💬"
+    if kind == "success" then accent = COLORS.Success; icon = "✓"
+    elseif kind == "error" then accent = COLORS.Error; icon = "✕"
+    elseif kind == "warning" then accent = COLORS.Warning; icon = "⚠" end
+
+    local n = create("Frame", {
+        Name = "Notify",
+        Size = UDim2.new(1, 0, 0, 72),
+        Position = UDim2.new(1, 350, 0, 0),
+        BackgroundColor3 = COLORS.PANEL,
+        BorderSizePixel = 0,
+        ZIndex = 10000,
+    }, notifyHolder)
+    corner(n, 10)
+    stroke(n, accent, 2, 0.15)
+
+    local ic = create("Frame", {
+        Size = UDim2.fromOffset(32, 32),
+        Position = UDim2.fromOffset(10, 10),
+        BackgroundColor3 = accent,
+        BackgroundTransparency = 0.75,
+        BorderSizePixel = 0,
+        ZIndex = 10001,
+    }, n)
+    corner(ic, 999)
+
+    create("TextLabel", {
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold,
+        Text = icon, TextColor3 = accent, TextSize = 16,
+        ZIndex = 10002, Parent = ic,
+    })
+    create("TextLabel", {
+        Size = UDim2.new(1, -60, 0, 20),
+        Position = UDim2.fromOffset(52, 8),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold,
+        Text = cfg.Title or "Уведомление",
+        TextColor3 = COLORS.Text, TextSize = 14,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 10001, Parent = n,
+    })
+    create("TextLabel", {
+        Size = UDim2.new(1, -60, 0, 40),
+        Position = UDim2.fromOffset(52, 26),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham,
+        Text = cfg.Content or "",
+        TextColor3 = COLORS.Subtext, TextSize = 12,
+        TextWrapped = true,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        TextYAlignment = Enum.TextYAlignment.Top,
+        ZIndex = 10001, Parent = n,
+    })
+
+    local bar = create("Frame", {
+        Position = UDim2.new(0, 10, 1, -6),
+        Size = UDim2.new(1, -20, 0, 3),
+        BackgroundColor3 = accent,
+        BackgroundTransparency = 0.3,
+        BorderSizePixel = 0,
+        ZIndex = 10001,
+    }, n)
+    corner(bar, 999)
+
+    return n, bar
+end
+
+local function reflow()
+    local active = {}
+    for _, c in ipairs(notifyHolder:GetChildren()) do
+        if c:IsA("Frame") and c.Name == "Notify" then table.insert(active, c) end
+    end
+    for i, n in ipairs(active) do
+        TweenService:Create(n, TweenInfo.new(0.35, Enum.EasingStyle.Quart, Enum.EasingDirection.Out), {
+            Position = UDim2.new(0, 20, 0, 20 + (i - 1) * 80),
+        }):Play()
+    end
+end
+
+local function processQueue()
+    if notifyActive or #notifyQueue == 0 then return end
+    notifyActive = true
+    local cfg = table.remove(notifyQueue, 1)
+    local n, bar = buildNotify(cfg)
+    reflow()
+
+    local dur = cfg.Duration or 4
+    TweenService:Create(bar, TweenInfo.new(dur, Enum.EasingStyle.Linear), {
+        Size = UDim2.new(0, 0, 0, 3),
+    }):Play()
+
+    if cfg.Sound ~= false then playSound(cfg.Kind or "info") end
+
+    task.delay(dur, function()
+        TweenService:Create(n, TweenInfo.new(0.3, Enum.EasingStyle.Quart, Enum.EasingDirection.In), {
+            Position = UDim2.new(1, 350, 0, n.Position.Y.Offset),
+        }):Play()
+        task.wait(0.35)
+        n:Destroy()
+        notifyActive = false
+        reflow()
+        processQueue()
+    end)
+end
+
+function Nova:Notify(cfg)
+    table.insert(notifyQueue, cfg or {})
+    processQueue()
+end
+
+-- ============================================================
+-- CREATE WINDOW
+-- ============================================================
+function Nova:CreateWindow(config)
+    config = config or {}
+    local W = {}
+    W.Tabs = {}
+    W.CurrentTab = nil
+    W.Enabled = true
+
+    if config.Theme and THEMES[config.Theme] then
+        currentTheme = config.Theme
+    end
+
+    -- ScreenGui
+    local gui = create("ScreenGui", {
+        Name = "Nova_" .. (config.Title or "Hub"),
+        ResetOnSpawn = false,
+        IgnoreGuiInset = true,
+        ZIndexBehavior = Enum.ZIndexBehavior.Sibling,
+        Parent = container(),
+    })
+    W.Gui = gui
+    initNotify(gui)
+
+    -- Wrapper для масштабирования
+    local wrapper = create("Frame", {
+        Name = "Wrapper",
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(0, 500, 0, 380),
+        Parent = gui,
+    })
+
+    -- Glow (свечение)
+    local glowHolder = create("Frame", {
+        BackgroundTransparency = 1,
+        AnchorPoint = Vector2.new(0.5, 0.5),
+        Position = UDim2.new(0.5, 0, 0.5, 0),
+        Size = UDim2.new(1, 40, 1, 40),
+        ZIndex = 0,
+        Parent = wrapper,
+    })
+
+    local glowLayers = {}
+    for i, p in ipairs({ 30, 20, 10 }) do
+        local layer = create("Frame", {
+            AnchorPoint = Vector2.new(0.5, 0.5),
+            Position = UDim2.new(0.5, 0, 0.5, 0),
+            Size = UDim2.new(1, p * 2, 1, p * 2),
+            BackgroundColor3 = THEMES[currentTheme].Accent,
+            BackgroundTransparency = 0.9,
+            BorderSizePixel = 0,
+            ZIndex = 0,
+            Parent = glowHolder,
+        })
+        corner(layer, 20)
+        table.insert(glowLayers, layer)
+    end
+
+    -- Пульсация свечения
+    task.spawn(function()
+        while glowHolder.Parent do
+            for _, l in ipairs(glowLayers) do
+                TweenService:Create(l, TweenInfo.new(1.8, Enum.EasingStyle.Sine), {
+                    BackgroundTransparency = 0.85,
+                }):Play()
+            end
+            task.wait(1.8)
+            for _, l in ipairs(glowLayers) do
+                TweenService:Create(l, TweenInfo.new(1.8, Enum.EasingStyle.Sine), {
+                    BackgroundTransparency = 0.9,
+                }):Play()
+            end
+            task.wait(1.8)
+        end
+    end)
+
+    -- Main Frame
+    local main = create("Frame", {
+        Name = "Main",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundColor3 = COLORS.BG,
+        BorderSizePixel = 0,
+        ClipsDescendants = true,
+        Active = true,
+        ZIndex = 2,
+        Parent = wrapper,
+    })
+    corner(main, 14)
+    local mainStroke = stroke(main, THEMES[currentTheme].Accent, 1.5, 0.2)
+
+    -- Частицы
+    local particles = create("Frame", {
+        Name = "Particles",
+        Size = UDim2.new(1, 0, 1, 0),
+        BackgroundTransparency = 1,
+        ZIndex = 1,
+        Parent = main,
+    })
+    local parts = {}
+    for i = 1, 15 do
+        local dot = create("Frame", {
+            Size = UDim2.fromOffset(math.random(2, 5), math.random(2, 5)),
+            Position = UDim2.new(math.random(), 0, math.random(), 0),
+            BackgroundColor3 = THEMES[currentTheme].Accent,
+            BackgroundTransparency = 0.85,
+            BorderSizePixel = 0,
+            ZIndex = 1,
+            Parent = particles,
+        })
+        corner(dot, 999)
+        table.insert(parts, {
+            frame = dot,
+            x = math.random(), y = math.random(),
+            speed = 0.02 + math.random() * 0.03,
+            sway = math.random() * 6.28,
+        })
+    end
+
+    -- Анимация частиц
+    task.spawn(function()
+        local t = 0
+        while main.Parent do
+            local dt = RunService.Heartbeat:Wait()
+            t = t + dt
+            for _, p in ipairs(parts) do
+                p.y = p.y - p.speed * dt
+                if p.y < -0.05 then
+                    p.y = 1.05
+                    p.x = math.random()
+                end
+                local sx = p.x + math.sin(t * 0.8 + p.sway) * 0.02
+                p.frame.Position = UDim2.new(sx, 0, p.y, 0)
+            end
+        end
+    end)
+
+    -- Title Bar
+    local titleBar = create("Frame", {
+        Name = "TitleBar",
+        Size = UDim2.new(1, 0, 0, 42),
+        BackgroundColor3 = COLORS.PANEL,
+        BorderSizePixel = 0,
+        Active = true,
+        ZIndex = 20,
+        Parent = main,
+    })
+    corner(titleBar, 14)
+
+    -- Square (закрыть скругление снизу)
+    create("Frame", {
+        Size = UDim2.new(1, 0, 0, 12),
+        Position = UDim2.new(0, 0, 1, -12),
+        BackgroundColor3 = COLORS.PANEL,
+        BorderSizePixel = 0,
+        ZIndex = 20,
+        Parent = titleBar,
+    })
+
+    create("TextLabel", {
+        Name = "Icon",
+        Size = UDim2.fromOffset(28, 28),
+        Position = UDim2.fromOffset(10, 7),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold,
+        Text = "⚡",
+        TextColor3 = THEMES[currentTheme].Accent,
+        TextSize = 18,
+        ZIndex = 21,
+        Parent = titleBar,
+    })
+
+    create("TextLabel", {
+        Name = "Title",
+        Size = UDim2.new(1, -110, 0, 22),
+        Position = UDim2.fromOffset(42, 4),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.GothamBold,
+        Text = config.Title or "Nova UI",
+        TextColor3 = COLORS.Text,
+        TextSize = 15,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 21,
+        Parent = titleBar,
+    })
+
+    create("TextLabel", {
+        Name = "SubTitle",
+        Size = UDim2.new(1, -110, 0, 14),
+        Position = UDim2.fromOffset(42, 24),
+        BackgroundTransparency = 1,
+        Font = Enum.Font.Gotham,
+        Text = config.SubTitle or ("v" .. Nova.Version),
+        TextColor3 = COLORS.Subtext,
+        TextSize = 10,
+        TextXAlignment = Enum.TextXAlignment.Left,
+        ZIndex = 21,
+        Parent = titleBar,
+    })
+
+    -- Кнопки
+    local function ctrlBtn(text, x, hover)
+        local b = create("TextButton", {
+            Size = UDim2.fromOffset(28, 28),
+            Position = UDim2.new(1, x, 0.5, -14),
+            BackgroundColor3 = COLORS.ITEM,
+            BorderSizePixel = 0,
+            Font = Enum.Font.GothamBold,
+            Text = text, TextColor3 = COLORS.Text, TextSize = 13,
+            AutoButtonColor = false, ZIndex = 21,
+            Parent = titleBar,
+        })
+        corner(b, 8)
+        b.MouseEnter:Connect(function()
+            TweenService:Create(b, TweenInfo.new(0.15), { BackgroundColor3 = hover }):Play()
+        end)
+        b.MouseLeave:Connect(function()
+            TweenService:Create(b, TweenInfo.new(0.15), { BackgroundColor3 = COLORS.ITEM }):Play()
+        end)
+        return b
+    end
+
+    local minBtn = ctrlBtn("—", -68, COLORS.Warning)
+    local closeBtn = ctrlBtn("✕", -36, COLORS.Error)
+
+    closeBtn.MouseButton1Click:Connect(function() gui:Destroy() end)
+
+    -- Body
+    local body = create("Frame", {
+        Name = "Body",
+        Size = UDim2.new(1, 0, 1, -42),
+        Position = UDim2.fromOffset(0, 42),
+        BackgroundTransparency = 1,
+        ZIndex = 2,
+        Parent = main,
+    })
+
+    -- Sidebar
+    local sidebar = create("Frame", {
+        Name = "Sidebar",
+        Size = UDim2.new(0, 130, 1, 0),
+        BackgroundColor3 = COLORS.PANEL,
+        BorderSizePixel = 0,
+        ZIndex = 3,
+        Parent = body,
+    })
+
+    local tabList = create("ScrollingFrame", {
+        Size = UDim2.new(1, -16, 1, -16),
+        Position = UDim2.fromOffset(8, 8),
+        BackgroundTransparency = 1,
+        BorderSizePixel = 0,
+        ScrollBarThickness = 3,
+        ScrollBarImageColor3 = THEMES[currentTheme].Accent,
+        CanvasSize = UDim2.new(0, 0, 0, 0),
+        AutomaticCanvasSize = Enum.AutomaticSize.Y,
+        ZIndex = 4,
+        Parent = sidebar,
+    })
+    list(tabList, 4)
+
+    -- Content Area
+    local contentArea = create("Frame", {
+        Name = "Content",
+        Size = UDim2.new(1, -130, 1, 0),
+        Position = UDim2.fromOffset(130, 0),
+        BackgroundTransparency = 1,
+        ZIndex = 3,
+        Parent = body,
+    })
+
+    -- MiniBar
+    local miniHolder = create("Frame", {
+        Name = "MiniHolder",
+        Size = UDim2.fromOffset(64, 64),
+        Position = UDim2.new(0, 20, 0, 20),
+        BackgroundTransparency = 1,
+        Visible = false,
+        ZIndex = 200,
+        Parent = gui,
+    })
+
+    local miniGlow = create("Frame", {
+        Size = UDim2.fromOffset(56, 56),
+        Position = UDim2.fromOffset(4, 4),
+        BackgroundColor3 = THEMES[currentTheme].Accent,
+        BackgroundTransparency = 0.8,
+        BorderSizePixel = 0,
+        ZIndex = 200,
+        Parent = miniHolder,
+    })
+    corner(miniGlow, 999)
+
+    local miniBtn = create("TextButton", {
+        Size = UDim2.fromOffset(50, 50),
+        Position = UDim2.fromOffset(7, 7),
+        BackgroundColor3 = COLORS.BG,
+        BorderSizePixel = 0,
+        Font = Enum.Font.GothamBold,
+        Text = "⚡", TextColor3 = THEMES[currentTheme].Accent, TextSize = 24,
+        AutoButtonColor = false, ZIndex = 201,
+        Parent = miniHolder,
+    })
+    corner(miniBtn, 999)
+    stroke(miniBtn, THEMES[currentTheme].Accent, 2, 0.2)
+
+    -- Пульсация мини-бара
+    task.spawn(function()
+        while miniHolder.Parent do
+            if miniHolder.Visible then
+                TweenService:Create(miniGlow, TweenInfo.new(1.2, Enum.EasingStyle.Sine), {
+                    Size = UDim2.fromOffset(62, 62),
+                    Position = UDim2.fromOffset(1, 1),
+                    BackgroundTransparency = 0.65,
+                }):Play()
+                task.wait(1.2)
+                TweenService:Create(miniGlow, TweenInfo.new(1.2, Enum.EasingStyle.Sine), {
+                    Size = UDim2.fromOffset(56, 56),
+                    Position = UDim2.fromOffset(4, 4),
+                    BackgroundTransparency = 0.8,
+                }):Play()
+                task.wait(1.2)
+            else
+                task.wait(0.3)
+            end
+        end
+    end)
+
+    -- Свернуть
+    minBtn.MouseButton1Click:Connect(function()
+        main.Visible = false
+        glowHolder.Visible = false
+        miniHolder.Visible = true
+    end)
+
+    -- Развернуть
+    miniBtn.MouseButton1Click:Connect(function()
+        main.Visible = true
+        glowHolder.Visible = true
+        miniHolder.Visible = false
+    end)
+
+    -- Drag (за любое место)
+    local drag, dragStart, startPos
+    local function startDrag(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            drag = true
+            dragStart = input.Position
+            startPos = wrapper.Position
+        end
+    end
+    UserInputService.InputChanged:Connect(function(input)
+        if drag and (input.UserInputType == Enum.UserInputType.MouseMovement
+           or input.UserInputType == Enum.UserInputType.Touch) then
+            local d = input.Position - dragStart
+            wrapper.Position = UDim2.new(
+                startPos.X.Scale, startPos.X.Offset + d.X,
+                startPos.Y.Scale, startPos.Y.Offset + d.Y)
+        end
+    end)
+    UserInputService.InputEnded:Connect(function(input)
+        if input.UserInputType == Enum.UserInputType.MouseButton1
+           or input.UserInputType == Enum.UserInputType.Touch then
+            drag = false
+        end
+    end)
+    main.InputBegan:Connect(startDrag)
+    titleBar.InputBegan:Connect(startDrag)
+    body.InputBegan:Connect(startDrag)
+
+    -- ============================================================
+    -- CREATE TAB
+    -- ============================================================
+    function W:CreateTab(tc)
+        tc = tc or {}
+        local T = {}
+        local name = tc.Name or "Tab"
+
+        local btn = create("TextButton", {
+            Size = UDim2.new(1, 0, 0, 34),
+            BackgroundColor3 = COLORS.ITEM,
+            BorderSizePixel = 0,
+            Font = Enum.Font.GothamMedium,
+            Text = name, TextColor3 = COLORS.Subtext, TextSize = 12,
+            AutoButtonColor = false, ZIndex = 5,
+            Parent = tabList,
+        })
+        corner(btn, 8)
+
+        local scroll = create("ScrollingFrame", {
+            Size = UDim2.new(1, -24, 1, -24),
+            Position = UDim2.fromOffset(12, 12),
+            BackgroundTransparency = 1,
+            BorderSizePixel = 0,
+            ScrollBarThickness = 3,
+            ScrollBarImageColor3 = THEMES[currentTheme].Accent,
+            CanvasSize = UDim2.new(0, 0, 0, 0),
+            AutomaticCanvasSize = Enum.AutomaticSize.Y,
+            Visible = false, ZIndex = 4,
+            Parent = contentArea,
+        })
+        list(scroll, 6)
+        padding(scroll, 0, 12, 12, 0)
+
+        btn.MouseButton1Click:Connect(function()
+            for _, t in pairs(W.Tabs) do
+                t.Content.Visible = false
+                TweenService:Create(t.Button, TweenInfo.new(0.15), { BackgroundColor3 = COLORS.ITEM }):Play()
+            end
+            scroll.Visible = true
+            TweenService:Create(btn, TweenInfo.new(0.15), { BackgroundColor3 = THEMES[currentTheme].Accent }):Play()
+            W.CurrentTab = name
+        end)
+
+        W.Tabs[name] = { Button = btn, Content = scroll }
+        if not W.CurrentTab then
+            scroll.Visible = true
+            btn.BackgroundColor3 = THEMES[currentTheme].Accent
+            W.CurrentTab = name
+        end
+
+        -- Элементы
+        function T:Section(text)
+            local s = create("TextLabel", {
+                Size = UDim2.new(1, 0, 0, 24),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamBold,
+                Text = text:upper(),
+                TextColor3 = COLORS.Subtext, TextSize = 11,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = scroll,
+            })
+        end
+
+        function T:Button(cfg)
+            cfg = cfg or {}
+            local b = create("TextButton", {
+                Size = UDim2.new(1, 0, 0, 38),
+                BackgroundColor3 = COLORS.ITEM,
+                BorderSizePixel = 0,
+                Font = Enum.Font.GothamMedium,
+                Text = "  " .. (cfg.Name or "Button"),
+                TextColor3 = COLORS.Text, TextSize = 13,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                AutoButtonColor = false,
+                Parent = scroll,
+            })
+            corner(b, 8)
+            b.MouseEnter:Connect(function()
+                TweenService:Create(b, TweenInfo.new(0.15), { BackgroundColor3 = COLORS.HOVER }):Play()
+            end)
+            b.MouseLeave:Connect(function()
+                TweenService:Create(b, TweenInfo.new(0.15), { BackgroundColor3 = COLORS.ITEM }):Play()
+            end)
+            b.MouseButton1Click:Connect(function()
+                if cfg.Callback then pcall(cfg.Callback) end
+            end)
+            return b
+        end
+
+        function T:Toggle(cfg)
+            cfg = cfg or {}
+            local s = cfg.Default or false
+            local row = create("TextButton", {
+                Size = UDim2.new(1, 0, 0, 38),
+                BackgroundColor3 = COLORS.ITEM,
+                BorderSizePixel = 0,
+                Text = "", AutoButtonColor = false,
+                Parent = scroll,
+            })
+            corner(row, 8)
+            create("TextLabel", {
+                Size = UDim2.new(1, -60, 1, 0),
+                Position = UDim2.fromOffset(12, 0),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamMedium,
+                Text = cfg.Name or "Toggle",
+                TextColor3 = COLORS.Text, TextSize = 13,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = row,
+            })
+            local track = create("Frame", {
+                Size = UDim2.fromOffset(40, 20),
+                Position = UDim2.new(1, -52, 0.5, -10),
+                BackgroundColor3 = s and THEMES[currentTheme].Accent or Color3.fromRGB(60, 60, 70),
+                BorderSizePixel = 0,
+                Parent = row,
+            })
+            corner(track, 999)
+            local knob = create("Frame", {
+                Size = UDim2.fromOffset(16, 16),
+                Position = s and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BorderSizePixel = 0,
+                Parent = track,
+            })
+            corner(knob, 999)
+            row.MouseButton1Click:Connect(function()
+                s = not s
+                TweenService:Create(track, TweenInfo.new(0.2), {
+                    BackgroundColor3 = s and THEMES[currentTheme].Accent or Color3.fromRGB(60, 60, 70)
+                }):Play()
+                TweenService:Create(knob, TweenInfo.new(0.28, Enum.EasingStyle.Back), {
+                    Position = s and UDim2.new(1, -18, 0.5, -8) or UDim2.new(0, 2, 0.5, -8)
+                }):Play()
+                if cfg.Callback then pcall(cfg.Callback, s) end
+            end)
+        end
+
+        function T:Slider(cfg)
+            cfg = cfg or {}
+            local min, max = cfg.Min or 0, cfg.Max or 100
+            local value = cfg.Default or min
+            local row = create("Frame", {
+                Size = UDim2.new(1, 0, 0, 50),
+                BackgroundColor3 = COLORS.ITEM,
+                BorderSizePixel = 0,
+                Parent = scroll,
+            })
+            corner(row, 8)
+            create("TextLabel", {
+                Size = UDim2.new(1, -80, 0, 22),
+                Position = UDim2.fromOffset(12, 4),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamMedium,
+                Text = cfg.Name or "Slider",
+                TextColor3 = COLORS.Text, TextSize = 13,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = row,
+            })
+            local valLbl = create("TextLabel", {
+                Size = UDim2.fromOffset(70, 22),
+                Position = UDim2.new(1, -76, 0, 4),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamBold,
+                Text = tostring(value),
+                TextColor3 = THEMES[currentTheme].Accent, TextSize = 13,
+                TextXAlignment = Enum.TextXAlignment.Right,
+                Parent = row,
+            })
+            local track = create("Frame", {
+                Size = UDim2.new(1, -24, 0, 6),
+                Position = UDim2.new(0, 12, 1, -18),
+                BackgroundColor3 = Color3.fromRGB(50, 50, 60),
+                BorderSizePixel = 0,
+                Parent = row,
+            })
+            corner(track, 999)
+            local fill = create("Frame", {
+                Size = UDim2.new((value - min) / (max - min), 0, 1, 0),
+                BackgroundColor3 = THEMES[currentTheme].Accent,
+                BorderSizePixel = 0,
+                Parent = track,
+            })
+            corner(fill, 999)
+            local knob = create("Frame", {
+                Size = UDim2.fromOffset(14, 14),
+                AnchorPoint = Vector2.new(0.5, 0.5),
+                Position = UDim2.new((value - min) / (max - min), 0, 0.5, 0),
+                BackgroundColor3 = Color3.fromRGB(255, 255, 255),
+                BorderSizePixel = 0,
+                Parent = track,
+            })
+            corner(knob, 999)
+            local drag = false
+            local function update(input)
+                local a = math.clamp((input.Position.X - track.AbsolutePosition.X) / track.AbsoluteSize.X, 0, 1)
+                value = math.floor(min + a * (max - min) + 0.5)
+                fill.Size = UDim2.new(a, 0, 1, 0)
+                knob.Position = UDim2.new(a, 0, 0.5, 0)
+                valLbl.Text = tostring(value)
+                if cfg.Callback then pcall(cfg.Callback, value) end
+            end
+            track.InputBegan:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1
+                   or input.UserInputType == Enum.UserInputType.Touch then
+                    drag = true; update(input)
+                end
+            end)
+            UserInputService.InputChanged:Connect(function(input)
+                if drag and (input.UserInputType == Enum.UserInputType.MouseMovement
+                   or input.UserInputType == Enum.UserInputType.Touch) then update(input) end
+            end)
+            UserInputService.InputEnded:Connect(function(input)
+                if input.UserInputType == Enum.UserInputType.MouseButton1
+                   or input.UserInputType == Enum.UserInputType.Touch then drag = false end
+            end)
+        end
+
+        function T:Paragraph(cfg)
+            cfg = cfg or {}
+            local p = create("Frame", {
+                Size = UDim2.new(1, 0, 0, 70),
+                BackgroundColor3 = COLORS.ITEM,
+                BorderSizePixel = 0,
+                Parent = scroll,
+            })
+            corner(p, 8)
+            padding(p, 10, 12, 10, 12)
+            create("TextLabel", {
+                Size = UDim2.new(1, 0, 0, 18),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.GothamBold,
+                Text = cfg.Title or "",
+                TextColor3 = COLORS.Text, TextSize = 13,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                Parent = p,
+            })
+            create("TextLabel", {
+                Size = UDim2.new(1, 0, 0, 40),
+                Position = UDim2.fromOffset(0, 20),
+                BackgroundTransparency = 1,
+                Font = Enum.Font.Gotham,
+                Text = cfg.Content or "",
+                TextColor3 = COLORS.Subtext, TextSize = 12,
+                TextWrapped = true,
+                TextXAlignment = Enum.TextXAlignment.Left,
+                TextYAlignment = Enum.TextYAlignment.Top,
+                Parent = p,
+            })
+        end
+
+        return T
+    end
+
+    -- Уведомление при запуске
+    task.delay(0.5, function()
+        Nova:Notify({
+            Title = "Nova UI",
+            Content = "Библиотека загружена (v" .. Nova.Version .. ")",
+            Kind = "success",
+            Duration = 3,
+        })
+    end)
+
+    return W
+end
+
+if getgenv then
+    getgenv().Nova = Nova
+    getgenv().NovaVersion = Nova.Version
+end
+
+print("[Nova] Загружено, версия:", Nova.Version)
+return Nova
